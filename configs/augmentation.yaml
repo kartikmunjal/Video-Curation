@@ -1,0 +1,58 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Augmentation pipeline configuration
+# ──────────────────────────────────────────────────────────────────────────────
+
+input_dir: data/curated
+output_dir: data/augmented
+manifest_in: data/curated/manifest.jsonl
+manifest_out: data/augmented/manifest.jsonl
+
+# How many synthetic clips to generate per real clip
+augmentation_multiplier: 1.0   # 1.0 = 1 synth per real (50% blend total)
+
+# ── Frame interpolation ───────────────────────────────────────────────────────
+frame_interpolation:
+  enabled: true
+  method: linear              # linear | rife
+  target_fps_multiplier: 2    # double the frame rate
+  # RIFE model (if method=rife):
+  rife_model: rife-v4.6
+
+# ── Color jitter ──────────────────────────────────────────────────────────────
+color_jitter:
+  enabled: true
+  brightness: 0.3             # ± fraction
+  contrast: 0.3
+  saturation: 0.3
+  hue: 0.1
+  apply_prob: 0.8             # probability per clip
+
+# ── Speed variation ───────────────────────────────────────────────────────────
+speed_variation:
+  enabled: true
+  factors: [0.75, 1.25]       # slow and fast variants
+  method: frame_sampling      # frame_sampling | optical_flow_interp
+  apply_prob: 0.5
+
+# ── Caption augmentation via VLM ──────────────────────────────────────────────
+caption_augmentation:
+  enabled: true
+  model: Salesforce/blip2-opt-2.7b   # lightweight VLM; swap for LLaVA-7B
+  device: cuda                        # cuda | cpu
+  sample_frames: 4                    # frames fed to VLM per clip
+  prompt_template: >
+    Describe this video clip in one concise sentence focusing on
+    the main action, setting, and subject.
+  max_new_tokens: 64
+  batch_size: 8
+  # Paraphrase existing captions too (requires LLM endpoint)
+  paraphrase:
+    enabled: false
+    model: mistralai/Mistral-7B-Instruct-v0.2
+    n_paraphrases: 2
+
+# ── Ray parallelism ───────────────────────────────────────────────────────────
+ray:
+  num_cpus: null
+  num_gpus: 1
+  batch_size: 32

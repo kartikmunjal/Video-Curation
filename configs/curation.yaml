@@ -1,0 +1,59 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Curation pipeline configuration
+# ──────────────────────────────────────────────────────────────────────────────
+
+input_dir: data/raw
+output_dir: data/curated
+manifest_path: data/curated/manifest.jsonl
+
+# ── Scene detection ───────────────────────────────────────────────────────────
+scene_detect:
+  detector: content          # content | threshold | adaptive
+  threshold: 27.0            # ContentDetector score (0-255)
+  min_scene_len_frames: 15   # drop scenes shorter than this
+  min_scene_len_sec: 0.5
+  keep_longest_scene: true   # per clip, keep only the dominant scene
+
+# ── Blur / sharpness filter ───────────────────────────────────────────────────
+blur_filter:
+  enabled: true
+  method: laplacian_var       # laplacian_var | fft_energy
+  # Sweep this threshold for the bias ablation:
+  #   aggressive=80, moderate=40, relaxed=20, off=0
+  threshold: 40.0
+  sample_frames: 8            # frames sampled per clip for scoring
+  clip_score_agg: mean        # mean | min | median
+
+# ── Quality / aesthetic filter ────────────────────────────────────────────────
+quality_filter:
+  enabled: true
+  method: brisque             # brisque | niqe | combined
+  # Higher = worse quality; clips ABOVE this are rejected
+  threshold: 50.0
+  sample_frames: 4
+
+# ── Motion score filter ───────────────────────────────────────────────────────
+motion_filter:
+  enabled: true
+  method: farneback           # farneback | raft (requires extra install)
+  min_motion: 2.0             # mean optical-flow magnitude; below = static
+  max_motion: 80.0            # above = shaky / artifact
+  sample_pairs: 6             # frame pairs per clip
+
+# ── Deduplication ─────────────────────────────────────────────────────────────
+dedup:
+  enabled: true
+  method: phash               # phash | dhash | clip_embed
+  hash_size: 8
+  hamming_threshold: 10       # bits; 0 = exact, higher = more aggressive
+  sample_frames: 4            # frames hashed per clip
+  # For clip_embed method (slower but more semantic):
+  embed_model: openai/clip-vit-base-patch32
+  embed_sim_threshold: 0.97
+
+# ── Ray parallelism ───────────────────────────────────────────────────────────
+ray:
+  num_cpus: null              # null = auto-detect
+  num_gpus: 0                 # set >0 to use GPU for RAFT / BRISQUE
+  batch_size: 64              # clips per Ray task
+  progress_bar: true

@@ -1,0 +1,55 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Training configuration — VideoMAE fine-tune ablation
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Data
+real_manifest: data/curated/manifest.jsonl
+synth_manifest: data/augmented/manifest.jsonl
+splits_dir: data/splits
+
+# Ablation: run training for each mixture ratio
+# 0.0 = real only, 1.0 = synthetic only
+mixture_ratios: [0.0, 0.25, 0.50, 0.75, 1.0]
+
+# Clip preprocessing
+clip:
+  num_frames: 16
+  frame_size: 224
+  fps: 8                       # sample at 8 fps (VideoMAE default)
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std:  [0.229, 0.224, 0.225]
+
+# Model
+model:
+  name: MCG-NJU/videomae-base  # ~87M params — fits on single GPU
+  task: classification          # classification | feature_extraction
+  num_classes: 10               # UCF-101 10-class subset
+  freeze_encoder: false
+  dropout: 0.1
+
+# Training
+training:
+  output_dir: results/ablation
+  epochs: 20
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-5
+  lr_scheduler: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  fp16: true
+  dataloader_num_workers: 4
+  save_best_only: true
+  early_stopping_patience: 5
+  seed: 42
+
+# Evaluation during training
+eval:
+  batch_size: 16
+  metric: top1_accuracy        # also logs top5
+  eval_steps: 200
+
+# Hardware
+hardware:
+  device: cuda                 # cuda | cpu | mps
+  num_gpus: 1

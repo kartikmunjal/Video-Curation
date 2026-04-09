@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "video-curation"
+version = "0.1.0"
+description = "Video curation pipeline with ablation study on data composition for generative models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Kartik Munjal", email = "kartikmunjal19@gmail.com"},
+]
+keywords = ["video", "curation", "generative-models", "data-quality", "ablation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.10",
+]
+
+dependencies = [
+    # core ML
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "transformers>=4.40.0",
+    "accelerate>=0.28.0",
+    "datasets>=2.18.0",
+    # video processing
+    "opencv-python>=4.9.0",
+    "decord>=0.6.0",
+    "scenedetect[opencv]>=0.6.3",
+    "ffmpeg-python>=0.2.0",
+    # quality / dedup
+    "imagehash>=4.3.1",
+    "scikit-image>=0.22.0",
+    "Pillow>=10.2.0",
+    # parallelism
+    "ray[default]>=2.9.0",
+    # evaluation
+    "scipy>=1.12.0",
+    "scikit-learn>=1.4.0",
+    # data / config
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.66.0",
+    "requests>=2.31.0",
+    # viz
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "black>=24.0",
+    "ruff>=0.3.0",
+    "ipykernel>=6.29",
+    "jupyter>=1.0",
+]
+captioning = [
+    # optional: VLM captioning (heavy deps, install separately)
+    "bitsandbytes>=0.43.0",
+    "sentencepiece>=0.2.0",
+]
+
+[project.scripts]
+vc-curate = "video_curation.pipeline.curator:main"
+vc-eval = "video_curation.evaluation.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"video_curation" = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=video_curation --cov-report=term-missing"
