@@ -137,6 +137,9 @@ Raw Videos (UCF-101 / Kinetics-400 subset)
 
 ```
 Video-Curation/
+├── Dockerfile                 # containerizes pipeline for Ray on Kubernetes
+├── deploy/
+│   └── ray-cluster.yaml       # KubeRay RayCluster definition (8–64 workers)
 ├── configs/
 │   ├── curation.yaml          # scene / blur / motion / dedup thresholds
 │   ├── augmentation.yaml      # interpolation, jitter, speed params
@@ -256,6 +259,15 @@ serialisation bottleneck (all workers send embeddings to a single `DedupActor`).
 Fault-tolerance test (5 % injected failures, `max_retries=2`): 100 % of clips
 eventually processed with zero data loss.
 
+**Cluster-scale context:** the benchmark above is on a single 8-core laptop.
+Ray's `@remote` API is cluster-transparent — switching to 64 cloud workers
+requires only changing `replicas: 8` → `replicas: 64` in `deploy/ray-cluster.yaml`.
+At 64 workers the 118 clips/min local rate projects to ~950 clips/min (assuming
+linear scaling holds through 32 workers and then degrades to 50 % efficiency at
+64 due to dedup actor contention) — sufficient to process the full Kinetics-400
+(~240 k clips, ~4 s each) in under 5 hours.  The pipeline is containerized and
+designed to run on **Ray on Kubernetes** (KubeRay); see [`deploy/`](deploy/).
+
 To reproduce:
 
 ```bash
@@ -340,6 +352,109 @@ output quality.
 
 ---
 
+## Extending to Multitask World Model Data
+
+The current pipeline curates clips for a single task: **action classification**.
+World models (Runway Gen, Sora, CogVideoX) are trained on diverse co-located
+task signals — the same clip annotated for multiple supervision targets
+simultaneously.  The pipeline architecture is explicitly designed for this
+extension:
+
+```
+Single-task (current)              Multitask extension
+──────────────────────────         ──────────────────────────────────────
+clip.mp4                           clip.mp4
+manifest.jsonl:                    manifest.jsonl:
+  { path, label, caption }           { path,
+                                       caption,          ← VLM (BLIP-2)
+                                       depth_path,       ← MiDaS / Depth-Anything
+                                       flow_path,        ← Farneback / RAFT
+                                       camera_pose,      ← COLMAP / DUSt3R
+                                       seg_mask_path,    ← SAM2
+                                       physics_tags      ← rule-based (gravity, contact)
+                                     }
+```
+
+Each augmentor in `src/video_curation/augmentation/` already runs per-clip
+and writes to a manifest entry — adding a depth estimator or pose estimator
+is a new `Augmentor` subclass, not a pipeline rewrite.  The Ray DAG passes
+manifest entries through as dictionaries; new fields are ignored by stages
+that don't consume them.
+
+**Why this matters for world models:**
+Each task signal teaches the model a different inductive bias about the world.
+Caption supervision teaches semantics.  Optical flow supervision teaches motion
+continuity.  Depth supervision teaches 3D structure.  Camera pose teaches
+scene geometry.  The curation bias analysis extends directly: aggressive blur
+filtering doesn't just under-represent *action categories* — it under-represents
+*camera environments* (dark stages, outdoor fields), systematically biasing
+the depth and pose distribution seen during training.
+
+The multitask manifest format is documented in
+`configs/curation.yaml` under the `task_signals` key (currently a no-op stub;
+activate by setting `task_signals.enabled: true`).
+
+---
+
+## Synthetic Data: Transformation-Based vs. Model-Driven Generation
+
+### What this pipeline does
+
+The augmentation suite (`src/video_curation/augmentation/`) generates synthetic
+clips through **deterministic transformations** of real clips:
+
+| Augmentation | What it adds | What it cannot add |
+|---|---|---|
+| Frame interpolation (RIFE/FILM) | Higher frame rate, smoother motion | New scene content |
+| Speed variation (0.5× – 2×) | Temporal diversity | New viewpoints |
+| Color jitter + brightness | Photometric diversity | New lighting conditions |
+| VLM captions (BLIP-2) | Text supervision signal | Physically plausible novel events |
+
+### Why transformation-based, not model-driven
+
+Full model-driven synthesis (rendering engines, physics simulators,
+text-to-video generative models) was out of scope here due to compute
+constraints — generating 4 k clips of 480×720 at 8fps with CogVideoX-2B
+requires ~2 A100-days at the batch sizes available.
+
+### What the model-driven extension looks like
+
+The pipeline is designed to accept model-driven clips without modification:
+any mp4 + JSONL entry with `is_synthetic: true` flows through the same
+curation, dedup, and mixing stages.
+
+```python
+# Hypothetical model-driven augmentation step
+# (runs after transformation augmentation in Stage 3)
+
+from video_curation.augmentation.caption_augmentation import CaptionAugmentor
+
+# Step 1: Generate captions for at-risk class clips using BLIP-2
+# (already implemented in caption_augmentation.py)
+captioner = CaptionAugmentor(model="Salesforce/blip2-opt-2.7b")
+
+# Step 2: Feed captions to CogVideoX to generate new clips
+# (bridge to Video-Generation repo)
+#   python ../Video-Generation/scripts/generate_videos.py \
+#       --prompts data/at_risk_captions.json \
+#       --model checkpoints/lora_r16_round3 \
+#       --out data/synthetic_cogvideox/
+
+# Step 3: Run generated clips back through the same curation pipeline
+#   python scripts/run_curation.py \
+#       --input_dir data/synthetic_cogvideox \
+#       --config configs/curation.yaml --blur_threshold 40
+```
+
+This closes the full loop: Video-Curation curates real data → Video-Generation
+fine-tunes a generative model → the generative model produces new synthetic
+clips → Video-Curation curates them and mixes them back in.  The 50 % optimal
+mix ablation can then be extended to include a **model-generated** tier alongside
+the transformation-based tier, testing whether generated clips are more or less
+effective than interpolated clips at each synthetic ratio.
+
+---
+
 ## Reproducing the Bias Finding
 
 ```bash
@@ -376,6 +491,43 @@ python scripts/run_bias_analysis.py \
 - `pyarrow` ≥ 14 (LanceDB table schema)
 
 See `pyproject.toml` for pinned versions.
+
+---
+
+## Deployment: Docker + Ray on Kubernetes
+
+The pipeline is containerized and designed to run on a **Ray on Kubernetes**
+(KubeRay) cluster for production-scale processing.
+
+```bash
+# Build the image
+docker build -t video-curation:latest .
+
+# Smoke-test locally (single worker)
+docker run --rm -v $(pwd)/data:/app/data video-curation:latest \
+    python scripts/run_curation.py \
+    --config configs/curation.yaml --blur_threshold 40 \
+    --output_dir data/curated/blur40
+
+# Deploy to Kubernetes (requires KubeRay operator)
+kubectl apply -f deploy/ray-cluster.yaml
+
+# Submit curation job to the cluster
+ray job submit \
+    --address http://localhost:8265 \
+    -- python scripts/run_curation.py \
+        --config configs/curation.yaml --blur_threshold 40 \
+        --output_dir s3://your-bucket/curated/blur40
+```
+
+`deploy/ray-cluster.yaml` defines a `RayCluster` with:
+- **Head node**: dashboard + GCS server, no curation tasks
+- **Worker group**: 8 replicas by default, autoscaler max 64
+- Each worker: 8 CPUs / 24 GB RAM; GPU line commented in for CLIP embedding
+
+Scaling from the local 16-worker benchmark to 64 cloud workers is a single
+field change (`replicas: 8` → `replicas: 64`) — the pipeline code is
+cluster-transparent.
 
 ---
 

@@ -1,0 +1,110 @@
+# KubeRay RayCluster definition for the Video-Curation pipeline
+#
+# Deploys a Ray cluster on Kubernetes (GKE / EKS / on-prem).
+# The curation pipeline code is unchanged — Ray's remote() API is
+# cluster-transparent; switching from 16 local workers to 64 cloud
+# workers requires only changing `workerGroupSpecs[0].replicas`.
+#
+# Prerequisites:
+#   kubectl apply -f https://raw.githubusercontent.com/ray-project/kuberay/master/ray-operator/config/crd/bases/ray.io_rayclusters.yaml
+#   kubectl apply -f https://raw.githubusercontent.com/ray-project/kuberay/master/ray-operator/config/default/
+#
+# Apply:
+#   kubectl apply -f deploy/ray-cluster.yaml
+#
+# Monitor:
+#   kubectl get raycluster
+#   kubectl port-forward svc/video-curation-head-svc 8265:8265
+#   # open http://localhost:8265 for Ray dashboard
+#
+# Run curation job on the cluster:
+#   ray job submit \
+#       --address http://localhost:8265 \
+#       --runtime-env-json '{"working_dir": "."}' \
+#       -- python scripts/run_curation.py \
+#           --config configs/curation.yaml \
+#           --blur_threshold 40 \
+#           --output_dir s3://your-bucket/curated/blur40
+
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: video-curation
+  namespace: default
+  labels:
+    app: video-curation
+spec:
+  rayVersion: "2.9.3"
+  enableInTreeAutoscaling: true
+
+  # ── Head node ──────────────────────────────────────────────────────────
+  headGroupSpec:
+    serviceType: ClusterIP
+    rayStartParams:
+      dashboard-host: "0.0.0.0"
+      num-cpus: "0"          # head doesn't run curation tasks
+    template:
+      spec:
+        containers:
+          - name: ray-head
+            image: video-curation:latest
+            imagePullPolicy: Always
+            ports:
+              - containerPort: 6379   # Ray GCS
+              - containerPort: 8265   # Ray dashboard
+              - containerPort: 10001  # Ray client
+            resources:
+              requests:
+                cpu: "2"
+                memory: "4Gi"
+              limits:
+                cpu: "4"
+                memory: "8Gi"
+            env:
+              - name: RAY_DISABLE_IMPORT_WARNING
+                value: "1"
+
+  # ── Worker nodes ────────────────────────────────────────────────────────
+  workerGroupSpecs:
+    - groupName: curation-workers
+      replicas: 8                # scale to 64 for full Kinetics-400
+      minReplicas: 2
+      maxReplicas: 64            # autoscaler upper bound
+      rayStartParams:
+        num-cpus: "8"
+      template:
+        spec:
+          containers:
+            - name: ray-worker
+              image: video-curation:latest
+              imagePullPolicy: Always
+              resources:
+                requests:
+                  cpu: "8"
+                  memory: "16Gi"
+                limits:
+                  cpu: "8"
+                  memory: "24Gi"
+                  # Uncomment for GPU-accelerated CLIP embedding:
+                  # nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: video-data
+                  mountPath: /data
+          volumes:
+            - name: video-data
+              persistentVolumeClaim:
+                claimName: video-data-pvc   # back with GCS/S3 CSI driver
+
+---
+# PVC for shared video storage (replace with your cloud storage CSI)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: video-data-pvc
+spec:
+  accessModes:
+    - ReadWriteMany           # NFS or GCS CSI for multi-node access
+  resources:
+    requests:
+      storage: 500Gi
+  storageClassName: standard
