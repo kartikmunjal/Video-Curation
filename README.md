@@ -161,7 +161,8 @@ Video-Curation/
 ├── notebooks/
 │   ├── 01_data_exploration.ipynb
 │   ├── 02_curation_analysis.ipynb
-│   └── 03_ablation_results.ipynb  # main findings + bias finding figures
+│   ├── 03_ablation_results.ipynb  # main findings + bias finding figures
+│   └── 04_cv_fundamentals.ipynb   # optical flow analysis, temporal attention, motion-FVD correlation
 └── results/
     ├── ablation/              # per-mixture FVD / CLIP scores
     └── bias_analysis/         # representation drift CSVs + plots
