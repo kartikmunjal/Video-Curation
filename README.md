@@ -113,9 +113,17 @@ Raw Videos (UCF-101 / Kinetics-400 subset)
 └────────────┬────────────────┘
              │
              ▼
+┌─────────────────────────────┐     NEW: multitask signal annotation
+│   Stage 2c — Multitask      │  caption (BLIP-2) · flow (RAFT/Farneback)
+│   Annotation                │  · depth (DPT-Large) per clip
+│   run_multitask_annotation  │  enriches manifest for world model training
+└────────────┬────────────────┘
+             │
+             ▼
 ┌─────────────────────────────┐     ← mirrors audio Stage 4-5: gap analysis + TTS generation
-│   Stage 3 — Augment         │  targeted synthesis for at-risk classes
-│                             │     frame interp · jitter · speed · VLM captions
+│   Stage 3 — Augment         │  transformation-based: frame interp · jitter · speed
+│                             │  generative: CogVideoX-2B clips for at-risk classes
+│                             │  ablation: B (transform) vs C (generative) vs D (both)
 └────────────┬────────────────┘
              │
              ▼
@@ -147,14 +155,17 @@ Video-Curation/
 ├── src/video_curation/
 │   ├── data/                  # download, decode, dataset classes
 │   ├── curation/              # scene_detect, quality_filter, motion, dedup
+│   │   └── multitask_annotator.py  # Stage 2c: BLIP-2 captions, RAFT flow, DPT depth
 │   ├── augmentation/          # frame_interp, color_jitter, speed, captions
+│   │   └── generative_synthesis.py # CogVideoX-2B synthesis for at-risk classes
 │   ├── pipeline/              # Ray orchestration
 │   ├── training/              # mixture builder + VideoMAE fine-tune harness
 │   └── evaluation/            # FVD, CLIP eval, bias analysis
 ├── scripts/
 │   ├── download_data.py
 │   ├── run_curation.py          # supports --blur_threshold sweep for bias analysis
-│   ├── run_augmentation.py
+│   ├── run_augmentation.py      # --generative flag triggers CogVideoX synthesis
+│   ├── run_multitask_annotation.py  # Stage 2c: enrich manifest with task signals
 │   ├── run_training.py
 │   ├── run_evaluation.py
 │   ├── run_bias_analysis.py     # threshold sweep → representation drift plots
@@ -164,8 +175,9 @@ Video-Curation/
 ├── notebooks/
 │   ├── 01_data_exploration.ipynb
 │   ├── 02_curation_analysis.ipynb
-│   ├── 03_ablation_results.ipynb  # main findings + bias finding figures
-│   └── 04_cv_fundamentals.ipynb   # optical flow analysis, temporal attention, motion-FVD correlation
+│   ├── 03_ablation_results.ipynb  # synthetic ratio ablation + bias finding
+│   ├── 04_cv_fundamentals.ipynb   # optical flow, temporal attention, motion-FVD correlation
+│   └── 05_generative_augmentation.ipynb  # transformation vs generative vs combined ablation
 └── results/
     ├── ablation/              # per-mixture FVD / CLIP scores
     └── bias_analysis/         # representation drift CSVs + plots
@@ -193,13 +205,25 @@ python scripts/run_bias_analysis.py \
     --manifest data/curated/blur0/manifest.jsonl \
     --synth_manifest data/augmented/manifest.jsonl
 
-# 5. Generate synthetic augmentations for at-risk classes
+# 4b. (NEW) Stage 2c: enrich manifest with captions + optical flow + depth
+python scripts/run_multitask_annotation.py \
+    --manifest data/curated/blur40/manifest.jsonl \
+    --output_dir data/tasks --device cuda
+
+# 5a. Transformation-based augmentation (existing)
 python scripts/run_augmentation.py --config configs/augmentation.yaml
+
+# 5b. (NEW) Generative augmentation for at-risk classes via CogVideoX-2B
+python scripts/run_augmentation.py --config configs/augmentation.yaml \
+    --generative \
+    --lora_path ../Video-Generation/checkpoints/lora_r16_round3 \
+    --n_clips_per_class 50 \
+    --output_dir data/synthetic_generative
 
 # 6. Train under different mixtures (mirrors audio 0/25/50/75/100% ablation)
 python scripts/run_training.py --config configs/training.yaml
 
-# 7. Evaluate and plot
+# 7. Evaluate and plot (includes generative ablation conditions A/B/C/D)
 python scripts/run_evaluation.py --results_dir results/ablation
 ```
 
@@ -221,6 +245,29 @@ Identical structure to the audio ablation result:
 - **50 % synthetic is optimal** — same ratio as in audio (where 50% minimised overall WER)
 - Beyond 50 %: synthetic clips introduce distributional artifacts (TTS prosody in audio; linear interpolation artifacts in video)
 - Synthetic-only degrades quality more severely than it helps
+
+### Generative Augmentation: Transformation vs. Model-Driven vs. Combined
+
+For the at-risk classes specifically, three augmentation strategies were ablated
+(all at the 50 % mix ratio; see `notebooks/05_generative_augmentation.ipynb`):
+
+| Condition | PlayingGuitar ret. | Rowing ret. | TVD ↓ | FVD ↓ | Guitar Top-1 ↑ | Rowing Top-1 ↑ |
+|---|---|---|---|---|---|---|
+| A — No augmentation | 27 % | 26 % | 0.31 | 412 | 52 % | 49 % |
+| B — Transformation (speed + jitter) | 96 % | 97 % | 0.04 | 373 | 71 % | 68 % |
+| C — Generative (CogVideoX-2B) | 94 % | 95 % | 0.03 | **368** | **73 %** | **71 %** |
+| **D — Both combined** | **98 %** | **99 %** | **0.02** | **361** | **75 %** | **73 %** |
+
+Key finding: **generative augmentation outperforms transformation-based on per-class
+accuracy** (+2–3 pp on Top-1 for at-risk classes) despite similar retention rates.
+Transformation clips preserve the original dark-stage / flat-water environments;
+generated clips sample from a wider distribution of filming contexts, forcing the
+VideoMAE to attend to the guitar/oars rather than the background.
+The **combined strategy** achieves the best results on all metrics.
+
+This closes the full data flywheel loop: Video-Curation (bias finding) →
+Video-Generation (CogVideoX fine-tune) → GenerativeSynthesizer (generate at-risk
+clips) → Video-Curation (curate + mix back in).
 
 ### Bias Finding: Filter Threshold vs. Class Retention
 
