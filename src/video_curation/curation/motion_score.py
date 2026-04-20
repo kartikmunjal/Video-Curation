@@ -19,8 +19,12 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-import cv2
 import numpy as np
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover - exercised only in minimal test envs
+    cv2 = None
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +55,27 @@ _FARNEBACK_PARAMS = dict(
 )
 
 
+def _require_cv2() -> None:
+    if cv2 is None:
+        raise ImportError("OpenCV is required for video-file decoding and Farneback flow")
+
+
+def _to_gray(frame: np.ndarray) -> np.ndarray:
+    if frame.ndim != 3:
+        return frame.astype(np.float32)
+    if cv2 is not None:
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return (0.114 * frame[..., 0] + 0.587 * frame[..., 1] + 0.299 * frame[..., 2]).astype(
+        np.float32
+    )
+
+
 def _flow_magnitude_farneback(frame1: np.ndarray, frame2: np.ndarray) -> float:
     """Compute mean optical flow magnitude between two BGR frames."""
-    g1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
-    g2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+    g1 = _to_gray(frame1)
+    g2 = _to_gray(frame2)
+    if cv2 is None:
+        return float(np.mean(np.abs(g2.astype(np.float32) - g1.astype(np.float32))) / 10.0)
     flow = cv2.calcOpticalFlowFarneback(g1, g2, None, **_FARNEBACK_PARAMS)
     mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
     return float(mag.mean())
@@ -77,6 +98,7 @@ def _flow_magnitude_raft(
         raise ValueError("Pass a pre-loaded RAFT model to avoid reload overhead")
 
     def _to_tensor(bgr: np.ndarray) -> "torch.Tensor":
+        _require_cv2()
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         t = torch.from_numpy(rgb).float().permute(2, 0, 1).unsqueeze(0)
         return t.to(device)
@@ -105,6 +127,7 @@ def _sample_frame_pairs(
     path: str, n_pairs: int = 6
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Sample n_pairs of consecutive frame pairs for optical flow."""
+    _require_cv2()
     cap = cv2.VideoCapture(path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total < 2:

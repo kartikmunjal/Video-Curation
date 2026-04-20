@@ -18,8 +18,12 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-import cv2
 import numpy as np
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover - exercised only in minimal test envs
+    cv2 = None
 
 log = logging.getLogger(__name__)
 
@@ -38,18 +42,44 @@ class QualityScore:
 # ── Blur detection ────────────────────────────────────────────────────────────
 
 
+def _require_cv2() -> None:
+    if cv2 is None:
+        raise ImportError("OpenCV is required for video-file decoding")
+
+
+def _to_gray(frame: np.ndarray) -> np.ndarray:
+    if frame.ndim != 3:
+        return frame
+    if cv2 is not None:
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # BGR luminance approximation used when OpenCV is not installed.
+    return (0.114 * frame[..., 0] + 0.587 * frame[..., 1] + 0.299 * frame[..., 2]).astype(
+        np.float32
+    )
+
+
 def _laplacian_variance(frame: np.ndarray) -> float:
     """Compute Laplacian variance as sharpness proxy.
 
     Higher = sharper.  Typical values: <100 blurry, >300 sharp.
     """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    gray = _to_gray(frame).astype(np.float64)
+    if cv2 is not None:
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    lap = (
+        -4.0 * gray
+        + np.roll(gray, 1, axis=0)
+        + np.roll(gray, -1, axis=0)
+        + np.roll(gray, 1, axis=1)
+        + np.roll(gray, -1, axis=1)
+    )
+    return float(lap.var())
 
 
 def _fft_energy(frame: np.ndarray, cutoff: float = 0.3) -> float:
     """High-frequency energy in FFT domain — alternative sharpness metric."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    gray = _to_gray(frame)
     f = np.fft.fft2(gray.astype(np.float32))
     fshift = np.fft.fftshift(f)
     magnitude = np.abs(fshift)
@@ -75,7 +105,7 @@ def _brisque_score(frame: np.ndarray) -> float:
         from skimage.metrics import mean_squared_error  # noqa
         from skimage.restoration import estimate_sigma
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        gray = _to_gray(frame)
         noise_sigma = estimate_sigma(gray, average_sigmas=True)
         # Normalise to 0-100 range (higher σ → worse quality)
         return float(min(100.0, noise_sigma * 200))
@@ -83,7 +113,7 @@ def _brisque_score(frame: np.ndarray) -> float:
         pass
 
     # Ultra-light fallback: pixel std (high std ≈ richer content ≈ lower "score")
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    gray = _to_gray(frame)
     std = float(gray.std())
     # Invert: low std → high score (bad)
     return float(max(0.0, 100.0 - std))
@@ -91,7 +121,8 @@ def _brisque_score(frame: np.ndarray) -> float:
 
 def _niqe_proxy(frame: np.ndarray) -> float:
     """Lightweight NIQE-like proxy using local variance statistics."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    _require_cv2()
+    gray = _to_gray(frame)
     gray_f = gray.astype(np.float32)
     # Local mean and variance via sliding window
     mu = cv2.GaussianBlur(gray_f, (7, 7), 7.0 / 6)
@@ -111,6 +142,7 @@ def _sample_frames(
     n_frames: int = 8,
 ) -> list[np.ndarray]:
     """Sample *n_frames* uniformly from *path* using OpenCV."""
+    _require_cv2()
     cap = cv2.VideoCapture(path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total < 1:

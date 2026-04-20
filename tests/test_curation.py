@@ -52,7 +52,6 @@ def test_quality_score_dataclass():
 def test_motion_score_static():
     """Two identical frames should produce near-zero optical flow."""
     from video_curation.curation.motion_score import _flow_magnitude_farneback
-    import cv2
 
     frame = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
     mag = _flow_magnitude_farneback(frame, frame)

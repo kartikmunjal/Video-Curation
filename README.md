@@ -23,6 +23,13 @@ same controlled ablation — sweeping filter thresholds and synthetic mix
 ratios while measuring downstream model quality — to surface that parallel
 and quantify it.
 
+Downstream, this repo feeds the video preference-alignment stack:
+
+| Repo | How it uses this output |
+|------|-------------------------|
+| [`Video-Generation`](https://github.com/kartikmunjal/Video-Generation) | Consumes curated and synthetic manifests for LoRA fine-tuning and DiffusionDPO ablations. |
+| [`Video-Quality-Reward-Modeling`](https://github.com/kartikmunjal/Video-Quality-Reward-Modeling) | Provides the human-preference validation layer for automated video quality rewards. |
+
 ---
 
 ## The Parallel: Audio → Video

@@ -88,4 +88,5 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --cov=video_curation --cov-report=term-missing"
+pythonpath = ["src"]
+addopts = "-v"
